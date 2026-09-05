@@ -1,0 +1,198 @@
+From: Randall <randall@rpx.io>
+Subject: [PATCH] Input: qcom-hv-haptics, rsinput: native FF_RUMBLE with a tunable mix
+
+With only FF_PERIODIC declared, ff-core rewrites every FF_RUMBLE into a
+periodic sine at strong/3 + weak/6. On the Odin 3 that means a game's
+strong-only pulse reaches 67 % drive and a weak-only pulse 33 %; games
+rarely send both, so nothing ever reaches full drive, and 50 ms weak
+pulses are hard to feel on an LRA with a 20-30 ms rise time.
+
+Declare FF_RUMBLE natively in the bridge and on the haptics input device,
+and give the driver an FF_RUMBLE case that shares the constant (direct
+play) path. The two magnitudes map onto the single LRA as
+max(strong * rumble_strong_pct, weak * rumble_weak_pct); defaults 100 and
+50 so strong-only is full drive and weak-only is half. Both are runtime
+module parameters so the mix can be tuned by feel. In-place updates while
+playing take the same level through the existing gain path.
+
+Also add the erase callback the bridge never had (EVIOCRMFF on the gamepad
+now reaches the driver) and an autores_direct_play parameter, default off
+(today's behaviour), to A/B auto-resonance during direct play.
+---
+diff --git a/drivers/input/joystick/rsinput.c b/drivers/input/joystick/rsinput.c
+index cbf4d8d..4c16103 100644
+--- a/drivers/input/joystick/rsinput.c
++++ b/drivers/input/joystick/rsinput.c
+@@ -465,6 +465,18 @@ static int rsinput_rumble_upload(struct input_dev *dev,
+     return qcom_spmi_haptics_global_upload(effect);
+ }
+ 
++static int rsinput_rumble_erase(struct input_dev *dev, int effect_id)
++{
++    struct rsinput_driver *drv = input_get_drvdata(dev);
++
++    if (!rumble_enable)
++        return 0;
++
++    /* process context (ff->mutex, no event_lock); keep ordering with a queued stop */
++    flush_work(&drv->rumble_work);
++    return qcom_spmi_haptics_global_erase(effect_id);
++}
++
+ static int rsinput_rumble_play(struct input_dev *dev, int effect_id, int val)
+ {
+     struct rsinput_driver *drv = input_get_drvdata(dev);
+@@ -647,6 +659,11 @@ static int rsinput_probe(struct serdev_device *serdev) {
+          * ff-core adds it for any device that declares FF_PERIODIC.
+          */
+         input_set_capability(drv->input, EV_FF, FF_SINE);
++        /*
++         * Native rumble: ff-core hands the effect through untouched instead
++         * of rewriting it into a periodic sine at strong/3 + weak/6.
++         */
++        input_set_capability(drv->input, EV_FF, FF_RUMBLE);
+ 
+         error = input_ff_create(drv->input, 1);
+         if (error) {
+@@ -657,6 +674,7 @@ static int rsinput_probe(struct serdev_device *serdev) {
+ 
+         drv->input->ff->upload = rsinput_rumble_upload;
+         drv->input->ff->playback = rsinput_rumble_play;
++        drv->input->ff->erase = rsinput_rumble_erase;
+     }
+ 
+     error = input_register_device(drv->input);
+diff --git a/drivers/input/misc/qcom-hv-haptics.c b/drivers/input/misc/qcom-hv-haptics.c
+index f7417a4..1e78f47 100644
+--- a/drivers/input/misc/qcom-hv-haptics.c
++++ b/drivers/input/misc/qcom-hv-haptics.c
+@@ -38,6 +38,34 @@
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/qcom_haptics.h>
+ 
++/*
++ * How a native FF_RUMBLE maps onto the single LRA. Both magnitudes are
++ * scaled by their percentage and the larger one drives the motor. Runtime
++ * tunable under /sys/module/qcom_hv_haptics/parameters/ so the mix can be
++ * chosen by feel on hardware.
++ */
++static unsigned int rumble_strong_pct = 100;
++module_param(rumble_strong_pct, uint, 0644);
++MODULE_PARM_DESC(rumble_strong_pct, "Percent of FF_RUMBLE strong_magnitude applied to the motor (default 100)");
++
++static unsigned int rumble_weak_pct = 50;
++module_param(rumble_weak_pct, uint, 0644);
++MODULE_PARM_DESC(rumble_weak_pct, "Percent of FF_RUMBLE weak_magnitude applied to the motor (default 50)");
++
++static bool autores_direct_play;
++module_param(autores_direct_play, bool, 0644);
++MODULE_PARM_DESC(autores_direct_play, "Keep LRA auto-resonance enabled during direct (constant/rumble) play (default N)");
++
++static s16 haptics_rumble_level(const struct ff_effect *effect)
++{
++	u32 strong = effect->u.rumble.strong_magnitude * rumble_strong_pct / 100;
++	u32 weak = effect->u.rumble.weak_magnitude * rumble_weak_pct / 100;
++	u32 level = max(strong, weak);
++
++	/* 0..0xffff rumble magnitude -> 0..0x7fff constant level */
++	return min_t(u32, level, 0xffff) >> 1;
++}
++
+ /* status register definitions in HAPTICS_CFG module */
+ #define HAP_CFG_REVISION1_REG			0x00
+ #define HAP_CFG_REVISION2_REG			0x01
+@@ -2664,7 +2692,7 @@ static int haptics_load_constant_effect(struct haptics_chip *chip, u8 amplitude)
+ 	if (rc < 0)
+ 		goto unlock;
+ 
+-	rc = haptics_enable_autores(chip, false);
++	rc = haptics_enable_autores(chip, autores_direct_play);
+ 
+ 	if (rc < 0)
+ 		goto unlock;
+@@ -3257,8 +3285,10 @@ static int haptics_upload_effect(struct input_dev *dev,
+ 			goto auto_suspend;
+ 	}
+ 
+-	if (chip->chip_is_playing && effect->type == FF_CONSTANT) {
+-		gain = effect->u.constant.level;
++	if (chip->chip_is_playing &&
++	    (effect->type == FF_CONSTANT || effect->type == FF_RUMBLE)) {
++		gain = effect->type == FF_RUMBLE ? haptics_rumble_level(effect) :
++						   effect->u.constant.level;
+ 
+ 		cancel_delayed_work_sync(&chip->stop_work);
+ 
+@@ -3281,9 +3311,11 @@ static int haptics_upload_effect(struct input_dev *dev,
+ 	}
+ 
+ 	switch (effect->type) {
++	case FF_RUMBLE:
+ 	case FF_CONSTANT:
+ 		length_ms = effect->replay.length;
+-		level = effect->u.constant.level;
++		level = effect->type == FF_RUMBLE ? haptics_rumble_level(effect) :
++						    effect->u.constant.level;
+ 		tmp = get_direct_play_max_amplitude(chip);
+ 		tmp *= level;
+ 		amplitude = tmp / 0x7fff;
+@@ -6488,6 +6520,7 @@ static int haptics_probe(struct platform_device *pdev)
+ 	chip->chip_is_playing = false;
+ 
+ 	input_set_capability(input_dev, EV_FF, FF_CONSTANT);
++	input_set_capability(input_dev, EV_FF, FF_RUMBLE);
+ 	//if ((chip->effects_count != 0) || (chip->primitives_count != 0)) {
+ 	input_set_capability(input_dev, EV_FF, FF_PERIODIC);
+ 	//input_set_capability(input_dev, EV_FF, FF_CUSTOM); //Drop FF_CUSTOM
+@@ -6831,8 +6864,26 @@ int qcom_spmi_haptics_global_set_gain(u16 gain) {
+ 	return 0;
+ }
+ 
++int qcom_spmi_haptics_global_erase(int effect_id) {
++	int ret;
++
++	mutex_lock(&haptics_global_lock);
++
++	if (!phapchip) {
++		mutex_unlock(&haptics_global_lock);
++		return -ENODEV;
++	}
++
++	ret = phapchip->input_dev->ff->erase(phapchip->input_dev, effect_id);
++
++	mutex_unlock(&haptics_global_lock);
++
++	return ret;
++}
++
+ EXPORT_SYMBOL_GPL(qcom_spmi_haptics_global_upload);
+ EXPORT_SYMBOL_GPL(qcom_spmi_haptics_global_playback);
++EXPORT_SYMBOL_GPL(qcom_spmi_haptics_global_erase);
+ EXPORT_SYMBOL_GPL(qcom_spmi_haptics_global_set_gain);
+ 
+ static const struct dev_pm_ops __maybe_unused haptics_pm_ops = {
+diff --git a/include/linux/soc/qcom/qcom_hv_haptics.h b/include/linux/soc/qcom/qcom_hv_haptics.h
+index e32deab..fe3e054 100644
+--- a/include/linux/soc/qcom/qcom_hv_haptics.h
++++ b/include/linux/soc/qcom/qcom_hv_haptics.h
+@@ -16,6 +16,7 @@ bool qcom_haptics_vi_sense_is_enabled(void);
+ int qcom_spmi_haptics_global_upload(struct ff_effect *effect);
+ int qcom_spmi_haptics_global_playback(int effect_id, int val);
+ int qcom_spmi_haptics_global_set_gain(u16 gain);
++int qcom_spmi_haptics_global_erase(int effect_id);
+ #else
+ static inline bool qcom_haptics_vi_sense_is_enabled(void)
+ {
+@@ -36,6 +37,11 @@ static inline int qcom_spmi_haptics_global_set_gain(u16 gain)
+ {
+     return 0;
+ }
++
++static inline int qcom_spmi_haptics_global_erase(int effect_id)
++{
++    return 0;
++}
+ #endif
+ 
+ #endif
+\ No newline at end of file

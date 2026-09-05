@@ -205,6 +205,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: local
   notes: The imported bridge shim turned every playback(0) into ff->erase because the driver's playback callback ignored val == 0, so a client that uploads once and then plays and stops repeatedly got exactly one burst (reproduced with fftest-style upload-once on the Odin 3; SDL hides it by re-uploading before every rumble call). playback(0) now stops with the configured brake and keeps the effect loaded; playback(1) re-enables the rail. The constant-effect stop timer was also armed at upload time from replay.length, cutting short any effect played later than it was uploaded; it is now armed when playback starts.
+- `patches/1009-input-haptics-native-ff-rumble.patch`
+  source: armada
+  upstream: local
+  notes: With only FF_PERIODIC declared, ff-core rewrote every FF_RUMBLE into a sine at strong/3 + weak/6, so a game's strong-only pulse reached 67 % drive and weak-only 33 % (measured on the Odin 3 with Animal Well: every pulse 50-120 ms, never strong and weak together). The bridge and the haptics input device now declare FF_RUMBLE natively; the driver maps max(strong * rumble_strong_pct, weak * rumble_weak_pct) onto the constant path, defaults 100/50, both runtime module parameters. Also adds the bridge's missing erase callback and an autores_direct_play parameter (default off) for A/B testing auto-resonance during direct play.
 - `patches/1005-input-rsinput-quiesce-the-mcu-across-system-sleep.patch`
   source: https://github.com/shuuri-labs/pocknix-os/blob/d2544c1481b55e9dec18ff74a8751d4a67b351f8/kernel/sm8550/patches/20-sm8550/1004-input-rsinput-suspend-resume-gamepad-mcu.patch
   upstream: local
