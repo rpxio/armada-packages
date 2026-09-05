@@ -158,9 +158,11 @@ CONFIG_BACKLIGHT_AW99706=y                # KONKR Pocket FIT Elite
 CONFIG_LEDS_CLASS_MULTICOLOR=y
 CONFIG_LEDS_QCOM_LPG=y
 CONFIG_LEDS_PWM_MULTICOLOR=y              # Odin 2 stick/side RGB (sn3112 PWM)
-# Odin 3 charging LED: pm8550 LPG multi-led bound to the battery power-supply
-# trigger (battery-charging-orange-full-green) from the DTS.
-CONFIG_POWER_SUPPLY_LEDS=y
+# LED triggers: the Odin 3 charging LED (pm8550 LPG multi-led) binds to the
+# battery power-supply trigger battery-charging-orange-full-green from its DTS.
+# power_supply_leds.o is built whenever LEDS_TRIGGERS is on (no separate
+# POWER_SUPPLY_LEDS symbol in 7.2.x); arm64 defconfig leaves triggers off.
+CONFIG_LEDS_TRIGGERS=y
 
 # ============== HID stack ==============
 CONFIG_INPUT_UINPUT=y

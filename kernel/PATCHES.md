@@ -537,7 +537,7 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   notes: Armada extracted this DTS from the cited ROCKNIX patch and then applied later ROCKNIX DTS updates.
 - `dts/cq8725s-ayn-odin3.dts.patch`
   source: armada
-  notes: Armada enables DPU dithering and adds the PM8550 LPG charging LED (multi-led on channels 1-3, `battery-charging-orange-full-green` trigger; needs `CONFIG_POWER_SUPPLY_LEDS`) after copying `dts/cq8725s-ayn-odin3.dts`.
+  notes: Armada enables DPU dithering and adds the PM8550 LPG charging LED (multi-led on channels 1-3, `battery-charging-orange-full-green` trigger; needs `CONFIG_LEDS_TRIGGERS`) after copying `dts/cq8725s-ayn-odin3.dts`.
 - `dts/cq8725s-ayn-common.dtsi.patch`
   source: armada
   notes: Armada keeps volume-up from waking the system, marks Odin 3's RSInput node as connected to the Qualcomm haptics device, and supplies the device's 1024 range and 70-count axis deadzone.
