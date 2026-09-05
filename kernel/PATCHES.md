@@ -201,6 +201,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: local
   notes: The imported bridge declares FF_PERIODIC without any waveform bit, so ff-core refuses direct periodic uploads with EINVAL before the haptics driver sees them, although the driver accepts FF_SINE. Declaring FF_SINE makes the advertised capabilities match what the chain can play. FF_RUMBLE is unaffected because ff-core adds it for every FF_PERIODIC device.
+- `patches/1008-input-haptics-stop-without-erase.patch`
+  source: armada
+  upstream: local
+  notes: The imported bridge shim turned every playback(0) into ff->erase because the driver's playback callback ignored val == 0, so a client that uploads once and then plays and stops repeatedly got exactly one burst (reproduced with fftest-style upload-once on the Odin 3; SDL hides it by re-uploading before every rumble call). playback(0) now stops with the configured brake and keeps the effect loaded; playback(1) re-enables the rail. The constant-effect stop timer was also armed at upload time from replay.length, cutting short any effect played later than it was uploaded; it is now armed when playback starts.
 - `patches/1005-input-rsinput-quiesce-the-mcu-across-system-sleep.patch`
   source: https://github.com/shuuri-labs/pocknix-os/blob/d2544c1481b55e9dec18ff74a8751d4a67b351f8/kernel/sm8550/patches/20-sm8550/1004-input-rsinput-suspend-resume-gamepad-mcu.patch
   upstream: local
