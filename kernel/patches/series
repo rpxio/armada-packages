@@ -72,6 +72,7 @@
 1007-input-rsinput-declare-ff-sine.patch
 1008-input-haptics-stop-without-erase.patch
 1009-input-haptics-native-ff-rumble.patch
+1010-input-haptics-ff-gain-and-stop-tunables.patch
 
 # ============== Audio ==============
 0059-ASoC-aw88395-lib-skip-monitor-sections-in-V1-ACF-parse.patch

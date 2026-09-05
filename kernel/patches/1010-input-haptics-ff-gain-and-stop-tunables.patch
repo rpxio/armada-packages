@@ -1,0 +1,163 @@
+From: Randall <randall@rpx.io>
+Subject: [PATCH] Input: qcom-hv-haptics, rsinput: FF_GAIN through the bridge and stop tunables
+
+Wire FF_GAIN from the gamepad to the haptics driver so a client's gain
+(Steam's rumble intensity, SDL_HapticSetGain) scales VMAX. ff-core calls
+set_gain under dev->event_lock and the haptics driver sleeps, so the bridge
+defers it to a work item like playback; the driver already clamps gain to
+0x4000..0x7fff, which spans AYN's Low..Highest range.
+
+Add runtime module parameters for tuning the short-pulse response on
+hardware without rebuilds: vmax_mv_override (DT qcom,vmax-mv otherwise),
+brake_pattern and brake_sine_gain (DT brake config otherwise), and
+rumble_min_pct, a floor for non-zero rumble so tiny requests still move
+the motor. All default to current behaviour.
+---
+diff --git a/drivers/input/joystick/rsinput.c b/drivers/input/joystick/rsinput.c
+index 4c16103..f326dd5 100644
+--- a/drivers/input/joystick/rsinput.c
++++ b/drivers/input/joystick/rsinput.c
+@@ -145,6 +145,8 @@ struct rsinput_driver {
+     struct work_struct rumble_work;
+     int rumble_effect_id;
+     int rumble_val;
++    struct work_struct gain_work;
++    u16 rumble_gain;
+ };
+ 
+ static const unsigned int keymap[] = {
+@@ -455,6 +457,26 @@ static void rsinput_rumble_work(struct work_struct *work)
+                                       READ_ONCE(drv->rumble_val));
+ }
+ 
++static void rsinput_gain_work(struct work_struct *work)
++{
++    struct rsinput_driver *drv =
++        container_of(work, struct rsinput_driver, gain_work);
++
++    qcom_spmi_haptics_global_set_gain(READ_ONCE(drv->rumble_gain));
++}
++
++/* ff-core calls set_gain under dev->event_lock; the haptics driver sleeps */
++static void rsinput_rumble_set_gain(struct input_dev *dev, u16 gain)
++{
++    struct rsinput_driver *drv = input_get_drvdata(dev);
++
++    if (!rumble_enable)
++        return;
++
++    WRITE_ONCE(drv->rumble_gain, gain);
++    queue_work(system_freezable_wq, &drv->gain_work);
++}
++
+ static int rsinput_rumble_upload(struct input_dev *dev,
+                                  struct ff_effect *effect,
+                                  struct ff_effect *old)
+@@ -651,6 +673,7 @@ static int rsinput_probe(struct serdev_device *serdev) {
+     if (device_property_present(&serdev->dev, "rumble-haptics")) {
+         input_set_drvdata(drv->input, drv);
+         INIT_WORK(&drv->rumble_work, rsinput_rumble_work);
++        INIT_WORK(&drv->gain_work, rsinput_gain_work);
+         input_set_capability(drv->input, EV_FF, FF_PERIODIC);
+         /*
+          * ff-core rejects a periodic upload whose waveform bit is not set
+@@ -664,6 +687,8 @@ static int rsinput_probe(struct serdev_device *serdev) {
+          * of rewriting it into a periodic sine at strong/3 + weak/6.
+          */
+         input_set_capability(drv->input, EV_FF, FF_RUMBLE);
++        /* FF_GAIN scales VMAX in the driver: Steam's rumble intensity slider */
++        input_set_capability(drv->input, EV_FF, FF_GAIN);
+ 
+         error = input_ff_create(drv->input, 1);
+         if (error) {
+@@ -675,6 +700,7 @@ static int rsinput_probe(struct serdev_device *serdev) {
+         drv->input->ff->upload = rsinput_rumble_upload;
+         drv->input->ff->playback = rsinput_rumble_play;
+         drv->input->ff->erase = rsinput_rumble_erase;
++        drv->input->ff->set_gain = rsinput_rumble_set_gain;
+     }
+ 
+     error = input_register_device(drv->input);
+@@ -700,6 +726,8 @@ static void rsinput_remove(struct serdev_device *serdev) {
+     /* flush, not cancel: unregister queues the final rumble stop */
+     if (drv->rumble_work.func)
+         flush_work(&drv->rumble_work);
++    if (drv->gain_work.func)
++        cancel_work_sync(&drv->gain_work);
+     if (drv->enable_gpio)
+         gpiod_set_value_cansleep(drv->enable_gpio, 0);
+ 
+@@ -716,6 +744,8 @@ static int rsinput_suspend(struct device *dev)
+     /* a pending rumble start must not fire into or after haptics suspend */
+     if (drv->rumble_work.func)
+         cancel_work_sync(&drv->rumble_work);
++    if (drv->gain_work.func)
++        cancel_work_sync(&drv->gain_work);
+ 
+     /*
+      * Stop continuous MCU reports before the UART suspends; otherwise the
+diff --git a/drivers/input/misc/qcom-hv-haptics.c b/drivers/input/misc/qcom-hv-haptics.c
+index 1e78f47..5712381 100644
+--- a/drivers/input/misc/qcom-hv-haptics.c
++++ b/drivers/input/misc/qcom-hv-haptics.c
+@@ -56,12 +56,32 @@ static bool autores_direct_play;
+ module_param(autores_direct_play, bool, 0644);
+ MODULE_PARM_DESC(autores_direct_play, "Keep LRA auto-resonance enabled during direct (constant/rumble) play (default N)");
+ 
++static unsigned int rumble_min_pct;
++module_param(rumble_min_pct, uint, 0644);
++MODULE_PARM_DESC(rumble_min_pct, "Floor for a non-zero FF_RUMBLE level, percent of full (default 0 = none)");
++
++static unsigned int vmax_mv_override;
++module_param(vmax_mv_override, uint, 0644);
++MODULE_PARM_DESC(vmax_mv_override, "Override the device-tree qcom,vmax-mv for direct play, in mV (default 0 = use DT)");
++
++static unsigned char brake_pattern[8];
++static int brake_pattern_count;
++module_param_array(brake_pattern, byte, &brake_pattern_count, 0644);
++MODULE_PARM_DESC(brake_pattern, "Override qcom,brake-pattern for direct play, up to 8 bytes (default: DT)");
++
++static int brake_sine_gain = -1;
++module_param(brake_sine_gain, int, 0644);
++MODULE_PARM_DESC(brake_sine_gain, "Override brake sine gain for direct play: 0=x1 1=x2 2=x4 3=x8 (default -1 = DT)");
++
+ static s16 haptics_rumble_level(const struct ff_effect *effect)
+ {
+ 	u32 strong = effect->u.rumble.strong_magnitude * rumble_strong_pct / 100;
+ 	u32 weak = effect->u.rumble.weak_magnitude * rumble_weak_pct / 100;
+ 	u32 level = max(strong, weak);
+ 
++	if (level && rumble_min_pct)
++		level = max(level, min(rumble_min_pct, 100U) * 0xffff / 100);
++
+ 	/* 0..0xffff rumble magnitude -> 0..0x7fff constant level */
+ 	return min_t(u32, level, 0xffff) >> 1;
+ }
+@@ -2666,6 +2686,9 @@ static int haptics_load_constant_effect(struct haptics_chip *chip, u8 amplitude)
+ 	/* No effect data when playing constant waveform */
+ 	play->effect = NULL;
+ 
++	if (vmax_mv_override)
++		vmax_mv = vmax_mv_override;
++
+ 	/* Fix Vmax to (hpwr_vreg_mv - hdrm_mv) in non-HBOOST regulator case */
+ 	if (is_haptics_external_powered(chip)) {
+ 		rc = haptics_get_vmax_headroom_mv(chip, &hdrm_mv);
+@@ -2683,6 +2706,17 @@ static int haptics_load_constant_effect(struct haptics_chip *chip, u8 amplitude)
+ 	/* Config brake settings if it's necessary */
+ 	play->brake = &chip->config.brake;
+ 	if (play->brake) {
++		int i;
++
++		/* runtime overrides for tuning the stop; DT values otherwise */
++		if (brake_pattern_count > 0) {
++			memset(play->brake->samples, 0, BRAKE_SAMPLE_COUNT);
++			for (i = 0; i < brake_pattern_count && i < BRAKE_SAMPLE_COUNT; i++)
++				play->brake->samples[i] = brake_pattern[i];
++		}
++		if (brake_sine_gain >= 0 && brake_sine_gain <= 3)
++			play->brake->sine_gain = brake_sine_gain;
++
+ 		rc = haptics_set_brake(chip, play->brake);
+ 		if (rc < 0)
+ 			goto unlock;

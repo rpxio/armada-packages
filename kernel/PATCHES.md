@@ -209,6 +209,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: local
   notes: With only FF_PERIODIC declared, ff-core rewrote every FF_RUMBLE into a sine at strong/3 + weak/6, so a game's strong-only pulse reached 67 % drive and weak-only 33 % (measured on the Odin 3 with Animal Well: every pulse 50-120 ms, never strong and weak together). The bridge and the haptics input device now declare FF_RUMBLE natively; the driver maps max(strong * rumble_strong_pct, weak * rumble_weak_pct) onto the constant path, defaults 100/50, both runtime module parameters. Also adds the bridge's missing erase callback and an autores_direct_play parameter (default off) for A/B testing auto-resonance during direct play.
+- `patches/1010-input-haptics-ff-gain-and-stop-tunables.patch`
+  source: armada
+  upstream: local
+  notes: Wires FF_GAIN from the RSInput gamepad to the haptics driver (deferred to a work item because ff-core calls set_gain under event_lock and the driver sleeps), so a client's gain scales VMAX across the 0x4000..0x7fff range the driver already clamps to, which matches AYN's Low..Highest. Adds runtime module parameters (vmax_mv_override, brake_pattern, brake_sine_gain, rumble_min_pct) for tuning the short-pulse response on hardware; all default to device-tree behaviour. Measured on the Odin 3: Android's stack leaves 13 % residual motion between 50 ms ticks and decays in ~80 ms, Linux 45 % and ~110 ms with identical brake registers, so the stop needs tuning by measurement.
 - `patches/1005-input-rsinput-quiesce-the-mcu-across-system-sleep.patch`
   source: https://github.com/shuuri-labs/pocknix-os/blob/d2544c1481b55e9dec18ff74a8751d4a67b351f8/kernel/sm8550/patches/20-sm8550/1004-input-rsinput-suspend-resume-gamepad-mcu.patch
   upstream: local
@@ -552,7 +556,7 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   notes: Armada enables DPU dithering after copying `dts/cq8725s-ayn-odin3.dts`.
 - `dts/cq8725s-ayn-common.dtsi.patch`
   source: armada
-  notes: Armada keeps volume-up from waking the system, marks Odin 3's RSInput node as connected to the Qualcomm haptics device, and supplies the device's 1024 range and 70-count axis deadzone.
+  notes: Armada keeps volume-up from waking the system, marks Odin 3's RSInput node as connected to the Qualcomm haptics device, and supplies the device's 1024 range and 70-count axis deadzone. Also caps qcom,vmax-mv at 1400 (was 1700): AYN's Android ships 1410 mV as its highest strength setting, and 1700 measured only +13 % motion while drifting -7 % over 25 s from heating.
 - `dts/qcs8550-ayaneo-pocket-common.dtsi.patch`
   source: armada
   notes: Armada keeps volume-up from waking the system and removes the SDHCI capability mask after copying `dts/qcs8550-ayaneo-pocket-common.dtsi`.
