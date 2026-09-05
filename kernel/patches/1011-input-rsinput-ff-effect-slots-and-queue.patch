@@ -1,0 +1,197 @@
+From: Randall <randall@rpx.io>
+Subject: [PATCH] Input: rsinput: eight FF effect slots and an ordered play/stop queue
+
+The bridge created the FF device with a single effect slot, so whichever
+client uploaded first owned rumble for everyone (InputPlumber keeps its
+effect uploaded, and fftest's second rumble effect fails with ENOSPC).
+Let ff-core hold eight effects; the haptics driver still holds one, so the
+bridge re-uploads whichever effect is played next and tracks which one is
+loaded. An update to the loaded effect still goes down immediately so a
+playing effect's amplitude can change in place.
+
+The playback callback also kept only the latest request, so a play and a
+stop arriving before the work item ran collapsed into one; measured on the
+Odin 3 as 7 of 50 pulses lost in a 50 ms on / 50 ms off train. Queue the
+requests in order and drain them from the work item.
+---
+diff --git a/drivers/input/joystick/rsinput.c b/drivers/input/joystick/rsinput.c
+index f326dd5..d2bcf90 100644
+diff --git a/drivers/input/joystick/rsinput.c b/drivers/input/joystick/rsinput.c
+index f326dd5..79187bb 100644
+--- a/drivers/input/joystick/rsinput.c
++++ b/drivers/input/joystick/rsinput.c
+@@ -11,7 +11,9 @@
+ #include <linux/init.h>
+ #include <linux/input.h>
+ #include <linux/kernel.h>
++#include <linux/kfifo.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/minmax.h>
+ #include <linux/of.h>
+ #include <linux/regulator/consumer.h>
+@@ -128,6 +130,14 @@ module_param(axis_righty_antideadzone,int,0660);
+ 
+ #define MCU_VERSION_MAX_LEN       64
+ 
++#define RSINPUT_FF_EFFECTS 8
++#define RSINPUT_FF_QUEUE   16
++
++struct rsinput_ff_req {
++    s16 effect_id;
++    s16 val;
++};
++
+ struct rsinput_driver {
+     struct serdev_device *serdev;
+     struct input_dev *input;
+@@ -143,8 +153,14 @@ struct rsinput_driver {
+     size_t rx_len;
+     uint8_t sequence_number;
+     struct work_struct rumble_work;
+-    int rumble_effect_id;
+-    int rumble_val;
++    /*
++     * ff-core stores up to RSINPUT_FF_EFFECTS effects; the haptics driver
++     * holds one. loaded_id is the one it holds. Play/stop requests arrive
++     * under dev->event_lock and are drained in order by rumble_work.
++     */
++    DECLARE_KFIFO(rumble_q, struct rsinput_ff_req, RSINPUT_FF_QUEUE);
++    struct mutex rumble_lock;
++    int loaded_id;
+     struct work_struct gain_work;
+     u16 rumble_gain;
+ };
+@@ -448,13 +464,46 @@ static const struct serdev_device_ops rsinput_rx_ops = {
+     .receive_buf = rsinput_rx,
+ };
+ 
++/* hand the effect ff-core holds for this id to the haptics driver */
++static int rsinput_load_effect(struct rsinput_driver *drv, int effect_id)
++{
++    struct input_dev *dev = drv->input;
++    struct ff_effect effect;
++    int error;
++
++    if (drv->loaded_id == effect_id)
++        return 0;
++
++    /* ff-core updates ff->effects[] under event_lock */
++    spin_lock_irq(&dev->event_lock);
++    effect = dev->ff->effects[effect_id];
++    spin_unlock_irq(&dev->event_lock);
++
++    error = qcom_spmi_haptics_global_upload(&effect);
++    if (error)
++        return error;
++
++    drv->loaded_id = effect_id;
++    return 0;
++}
++
+ static void rsinput_rumble_work(struct work_struct *work)
+ {
+     struct rsinput_driver *drv =
+         container_of(work, struct rsinput_driver, rumble_work);
+-
+-    qcom_spmi_haptics_global_playback(READ_ONCE(drv->rumble_effect_id),
+-                                      READ_ONCE(drv->rumble_val));
++    struct rsinput_ff_req req;
++
++    mutex_lock(&drv->rumble_lock);
++    while (kfifo_get(&drv->rumble_q, &req)) {
++        if (req.val) {
++            if (rsinput_load_effect(drv, req.effect_id))
++                continue;
++            qcom_spmi_haptics_global_playback(req.effect_id, req.val);
++        } else if (drv->loaded_id == req.effect_id) {
++            qcom_spmi_haptics_global_playback(req.effect_id, 0);
++        }
++    }
++    mutex_unlock(&drv->rumble_lock);
+ }
+ 
+ static void rsinput_gain_work(struct work_struct *work)
+@@ -481,10 +530,26 @@ static int rsinput_rumble_upload(struct input_dev *dev,
+                                  struct ff_effect *effect,
+                                  struct ff_effect *old)
+ {
++    struct rsinput_driver *drv = input_get_drvdata(dev);
++    int error = 0;
++
+     if (!rumble_enable)
+         return 0;
+ 
+-    return qcom_spmi_haptics_global_upload(effect);
++    /*
++     * Only the effect the driver currently holds (or the first one) goes
++     * down now; an update to a playing effect must reach the driver at
++     * once. Others stay in ff-core until they are played.
++     */
++    mutex_lock(&drv->rumble_lock);
++    if (drv->loaded_id < 0 || drv->loaded_id == effect->id) {
++        error = qcom_spmi_haptics_global_upload(effect);
++        if (!error)
++            drv->loaded_id = effect->id;
++    }
++    mutex_unlock(&drv->rumble_lock);
++
++    return error;
+ }
+ 
+ static int rsinput_rumble_erase(struct input_dev *dev, int effect_id)
+@@ -496,22 +561,30 @@ static int rsinput_rumble_erase(struct input_dev *dev, int effect_id)
+ 
+     /* process context (ff->mutex, no event_lock); keep ordering with a queued stop */
+     flush_work(&drv->rumble_work);
+-    return qcom_spmi_haptics_global_erase(effect_id);
++    mutex_lock(&drv->rumble_lock);
++    if (drv->loaded_id == effect_id) {
++        qcom_spmi_haptics_global_erase(effect_id);
++        drv->loaded_id = -1;
++    }
++    mutex_unlock(&drv->rumble_lock);
++    return 0;
+ }
+ 
+ static int rsinput_rumble_play(struct input_dev *dev, int effect_id, int val)
+ {
+     struct rsinput_driver *drv = input_get_drvdata(dev);
++    struct rsinput_ff_req req = { .effect_id = effect_id, .val = val };
+ 
+     if (!rumble_enable)
+         return 0;
+ 
+     /*
+-     * Called under dev->event_lock and the bridge sleeps; latest request
+-     * wins, and the freezable queue keeps it off a suspending chip.
++     * Called under dev->event_lock and the bridge sleeps. Queue in order
++     * (a play/stop pair must not collapse into one); the freezable queue
++     * keeps it off a suspending chip.
+      */
+-    WRITE_ONCE(drv->rumble_effect_id, effect_id);
+-    WRITE_ONCE(drv->rumble_val, val);
++    if (!kfifo_put(&drv->rumble_q, req))
++        dev_warn_ratelimited(&dev->dev, "rumble queue full, dropping request\n");
+     queue_work(system_freezable_wq, &drv->rumble_work);
+ 
+     return 0;
+@@ -674,6 +747,9 @@ static int rsinput_probe(struct serdev_device *serdev) {
+         input_set_drvdata(drv->input, drv);
+         INIT_WORK(&drv->rumble_work, rsinput_rumble_work);
+         INIT_WORK(&drv->gain_work, rsinput_gain_work);
++        INIT_KFIFO(drv->rumble_q);
++        mutex_init(&drv->rumble_lock);
++        drv->loaded_id = -1;
+         input_set_capability(drv->input, EV_FF, FF_PERIODIC);
+         /*
+          * ff-core rejects a periodic upload whose waveform bit is not set
+@@ -690,7 +766,7 @@ static int rsinput_probe(struct serdev_device *serdev) {
+         /* FF_GAIN scales VMAX in the driver: Steam's rumble intensity slider */
+         input_set_capability(drv->input, EV_FF, FF_GAIN);
+ 
+-        error = input_ff_create(drv->input, 1);
++        error = input_ff_create(drv->input, RSINPUT_FF_EFFECTS);
+         if (error) {
+             dev_err(&serdev->dev,
+                     "Unable to create force feedback device: %d\n", error);

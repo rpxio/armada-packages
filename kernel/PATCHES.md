@@ -213,6 +213,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: local
   notes: Wires FF_GAIN from the RSInput gamepad to the haptics driver (deferred to a work item because ff-core calls set_gain under event_lock and the driver sleeps), so a client's gain scales VMAX across the 0x4000..0x7fff range the driver already clamps to, which matches AYN's Low..Highest. Adds runtime module parameters (vmax_mv_override, brake_pattern, brake_sine_gain, rumble_min_pct) for tuning the short-pulse response on hardware; all default to device-tree behaviour. Measured on the Odin 3: Android's stack leaves 13 % residual motion between 50 ms ticks and decays in ~80 ms, Linux 45 % and ~110 ms with identical brake registers, so the stop needs tuning by measurement.
+- `patches/1011-input-rsinput-ff-effect-slots-and-queue.patch`
+  source: armada
+  upstream: local
+  notes: The bridge created its FF device with one effect slot, so the first client to upload (InputPlumber keeps its effect uploaded) owned rumble for everyone and fftest's second rumble effect failed with ENOSPC. ff-core now holds eight effects; the haptics driver still holds one, so the bridge re-uploads whichever effect is played next and tracks the loaded one, while updates to the loaded effect still go down at once. The playback callback also kept only the latest request, collapsing a play/stop pair that arrived before its work item ran (7 of 50 pulses lost in a 50 ms on/off train on the Odin 3); requests are now queued in order.
 - `patches/1005-input-rsinput-quiesce-the-mcu-across-system-sleep.patch`
   source: https://github.com/shuuri-labs/pocknix-os/blob/d2544c1481b55e9dec18ff74a8751d4a67b351f8/kernel/sm8550/patches/20-sm8550/1004-input-rsinput-suspend-resume-gamepad-mcu.patch
   upstream: local
