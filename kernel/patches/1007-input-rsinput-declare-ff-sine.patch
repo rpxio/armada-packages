@@ -1,0 +1,28 @@
+From: Randall <randall@rpx.io>
+Subject: [PATCH] Input: rsinput: declare FF_SINE alongside FF_PERIODIC
+
+The rumble bridge declares FF_PERIODIC but no waveform bit, so ff-core
+rejects any direct periodic upload with EINVAL before the driver sees it
+(fftest effect 0). The qcom-hv-haptics driver already accepts FF_SINE.
+Declare it. FF_RUMBLE is unaffected: ff-core adds it for every device
+that declares FF_PERIODIC and converts it to a sine internally.
+
+---
+diff --git a/drivers/input/joystick/rsinput.c b/drivers/input/joystick/rsinput.c
+index d3369da..cbf4d8d 100644
+--- a/drivers/input/joystick/rsinput.c
++++ b/drivers/input/joystick/rsinput.c
+@@ -640,6 +640,13 @@ static int rsinput_probe(struct serdev_device *serdev) {
+         input_set_drvdata(drv->input, drv);
+         INIT_WORK(&drv->rumble_work, rsinput_rumble_work);
+         input_set_capability(drv->input, EV_FF, FF_PERIODIC);
++        /*
++         * ff-core rejects a periodic upload whose waveform bit is not set
++         * before the driver sees it. The haptics driver handles FF_SINE
++         * (patch 1001), so declare it; FF_RUMBLE keeps working because
++         * ff-core adds it for any device that declares FF_PERIODIC.
++         */
++        input_set_capability(drv->input, EV_FF, FF_SINE);
+ 
+         error = input_ff_create(drv->input, 1);
+         if (error) {

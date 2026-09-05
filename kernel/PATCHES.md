@@ -197,6 +197,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: local
   notes: The imported periodic-sine compatibility patch changed zero-amplitude updates to gain 1, then stopped the motor five seconds later. The configured brake pattern made that stop a distinct delayed tap. Zero-amplitude updates now erase immediately, a following playback request cannot restart stale motor state when no effect is loaded, and in-place gain updates balance their transient runtime-PM reference.
+- `patches/1007-input-rsinput-declare-ff-sine.patch`
+  source: armada
+  upstream: local
+  notes: The imported bridge declares FF_PERIODIC without any waveform bit, so ff-core refuses direct periodic uploads with EINVAL before the haptics driver sees them, although the driver accepts FF_SINE. Declaring FF_SINE makes the advertised capabilities match what the chain can play. FF_RUMBLE is unaffected because ff-core adds it for every FF_PERIODIC device.
 - `patches/1005-input-rsinput-quiesce-the-mcu-across-system-sleep.patch`
   source: https://github.com/shuuri-labs/pocknix-os/blob/d2544c1481b55e9dec18ff74a8751d4a67b351f8/kernel/sm8550/patches/20-sm8550/1004-input-rsinput-suspend-resume-gamepad-mcu.patch
   upstream: local
