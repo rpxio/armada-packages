@@ -1,0 +1,65 @@
+From: Praveen Talari <praveen.talari@oss.qualcomm.com>
+Subject: [PATCH] serial: qcom-geni: add force suspend/resume to system sleep callbacks
+
+When a port is open at system suspend, the runtime-PM usage count of the
+serial engine stays elevated and its runtime-suspend callback never runs,
+so the GENI clocks and interconnect votes stay up for the whole sleep.
+On the AYN Odin 3 the Bluetooth HCI and gamepad MCU serdev ports are
+always open, which keeps the QUP wrapper clocked, holds a CNOC vote in
+the RPMh sleep set, and stops the SoC from ever reaching CX shutdown in
+suspend-to-idle: about 240 mA during a 10 minute nap versus 5 mA with
+both ports closed.
+
+Call pm_runtime_force_suspend() at the end of the system-suspend callback
+so the runtime-suspend path always gates the resources, skipping only a
+console whose suspend is disabled, and pm_runtime_force_resume() at the
+start of the resume callback to restore them before the port is resumed.
+
+Backport of the mainline change to Linux 7.2 on top of Armada's 1006
+(the non-console IRQ mask in the same two functions).
+
+Signed-off-by: Praveen Talari <praveen.talari@oss.qualcomm.com>
+(cherry picked from commit d0cd9c8d0fd59bc7d140f3d60cf02e1d80376dab)
+
+--- a/drivers/tty/serial/qcom_geni_serial.c
++++ b/drivers/tty/serial/qcom_geni_serial.c
+@@ -1975,6 +1975,7 @@
+ 	struct qcom_geni_serial_port *port = dev_get_drvdata(dev);
+ 	struct uart_port *uport = &port->uport;
+ 	struct qcom_geni_private_data *private_data = uport->private_data;
++	int ret;
+ 
+ 	/*
+ 	 * A peer that keeps streaming into a non-console geni UART across the
+@@ -2001,7 +2002,19 @@
+ 		geni_icc_set_tag(&port->se, QCOM_ICC_TAG_ACTIVE_ONLY);
+ 		geni_icc_set_bw(&port->se);
+ 	}
+-	return uart_suspend_port(private_data->drv, uport);
++
++	ret = uart_suspend_port(private_data->drv, uport);
++	if (ret)
++		return ret;
++
++	/*
++	 * When no_console_suspend is set the console must remain active
++	 * across system sleep, so skip the force suspend path.
++	 */
++	if (!console_suspend_enabled && uart_console(uport))
++		return 0;
++
++	return pm_runtime_force_suspend(dev);
+ }
+ 
+ static int qcom_geni_serial_resume(struct device *dev)
+@@ -2011,6 +2024,10 @@
+ 	struct uart_port *uport = &port->uport;
+ 	struct qcom_geni_private_data *private_data = uport->private_data;
+ 
++	ret = pm_runtime_force_resume(dev);
++	if (ret)
++		return ret;
++
+ 	ret = uart_resume_port(private_data->drv, uport);
+ 	/* Balance the disable_irq() taken in qcom_geni_serial_suspend(). */
+ 	if (!uart_console(uport))
