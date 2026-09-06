@@ -1,0 +1,189 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] soc: qcom: add SMP2P sleep state signalling driver
+
+On SM8x50 the ADSP and other remote subsystems keep RPMh votes in their
+sleep sets until the application processor tells them it is asleep. The
+downstream kernels do that through an SMP2P "sleepstate" entry: bit 12 of
+the entry is set while the AP is awake and cleared from a PM notifier on
+PM_SUSPEND_PREPARE. Mainline has no equivalent, so during suspend-to-idle
+the AP releases every power domain, clock and bandwidth vote it owns and
+the SoC still never enters CX shutdown, AOSS deep sleep or DDR self
+refresh. On the AYN Odin 3 that costs roughly half a watt for the whole
+night.
+
+Port the downstream driver to the mainline smem-state and platform IRQ
+APIs. The optional "smp2p-sleepstate-in" interrupt is the remote side's
+request for the AP to stay up briefly and is turned into a 200 ms
+wakeup event, as downstream does.
+
+--- a/drivers/soc/qcom/Kconfig
++++ b/drivers/soc/qcom/Kconfig
+@@ -208,6 +208,16 @@
+ 	help
+ 	  Say yes here to support the Qualcomm Shared Memory Point to Point
+ 	  protocol.
++
++config QCOM_SMP2P_SLEEPSTATE
++	tristate "Qualcomm SMP2P sleep state signalling"
++	depends on QCOM_SMP2P
++	depends on PM_SLEEP
++	help
++	  Say yes here to signal remote subsystems over SMP2P whether the
++	  application processor is awake. Qualcomm firmware uses this to
++	  release its own votes during system suspend so the SoC can enter
++	  its deepest sleep states.
+ 
+ config QCOM_SMSM
+ 	tristate "Qualcomm Shared Memory State Machine"
+--- a/drivers/soc/qcom/Makefile
++++ b/drivers/soc/qcom/Makefile
+@@ -27,6 +27,7 @@
+ obj-$(CONFIG_QCOM_SMEM_STATE) += smem_state.o
+ CFLAGS_smp2p.o := -I$(src)
+ obj-$(CONFIG_QCOM_SMP2P)	+= smp2p.o
++obj-$(CONFIG_QCOM_SMP2P_SLEEPSTATE) += smp2p_sleepstate.o
+ obj-$(CONFIG_QCOM_SMSM)	+= smsm.o
+ obj-$(CONFIG_QCOM_SOCINFO)	+= socinfo.o
+ obj-$(CONFIG_QCOM_SPM)		+= spm.o
+--- a/drivers/soc/qcom/smp2p_sleepstate.c
++++ b/drivers/soc/qcom/smp2p_sleepstate.c
+@@ -0,0 +1,139 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Qualcomm SMP2P sleep-state signalling
++ *
++ * Tells remote subsystems (the ADSP on SM8x50) over SMP2P whether the
++ * application processor is awake. Firmware uses the bit to decide when it
++ * may release its own RPMh votes and pause periodic work. Without it the
++ * SoC never reaches CX shutdown or AOSS deep sleep during suspend-to-idle
++ * even though the AP side has dropped every vote.
++ *
++ * Derived from the downstream smp2p_sleepstate driver,
++ * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
++ */
++
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm_wakeup.h>
++#include <linux/soc/qcom/smem_state.h>
++#include <linux/suspend.h>
++
++struct smp2p_sleepstate {
++	struct device *dev;
++	struct qcom_smem_state *state;
++	unsigned int awake_bit;
++	struct notifier_block pm_nb;
++};
++
++static int smp2p_sleepstate_pm_notifier(struct notifier_block *nb,
++					unsigned long event, void *unused)
++{
++	struct smp2p_sleepstate *ss = container_of(nb, struct smp2p_sleepstate,
++						   pm_nb);
++	u32 mask = BIT(ss->awake_bit);
++	int ret;
++
++	switch (event) {
++	case PM_SUSPEND_PREPARE:
++		ret = qcom_smem_state_update_bits(ss->state, mask, 0);
++		if (ret)
++			dev_warn(ss->dev, "failed to signal sleep: %d\n", ret);
++		/* Give the remote side time to act before tasks are frozen. */
++		usleep_range(20000, 20500);
++		break;
++	case PM_POST_SUSPEND:
++		ret = qcom_smem_state_update_bits(ss->state, mask, mask);
++		if (ret)
++			dev_warn(ss->dev, "failed to signal awake: %d\n", ret);
++		break;
++	}
++
++	return NOTIFY_DONE;
++}
++
++static irqreturn_t smp2p_sleepstate_irq(int irq, void *data)
++{
++	struct smp2p_sleepstate *ss = data;
++
++	/* The remote side asked the AP to stay awake for a moment. */
++	pm_wakeup_dev_event(ss->dev, 200, false);
++
++	return IRQ_HANDLED;
++}
++
++static void smp2p_sleepstate_unregister_nb(void *data)
++{
++	unregister_pm_notifier(data);
++}
++
++static int smp2p_sleepstate_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct smp2p_sleepstate *ss;
++	u32 mask;
++	int irq, ret;
++
++	ss = devm_kzalloc(dev, sizeof(*ss), GFP_KERNEL);
++	if (!ss)
++		return -ENOMEM;
++	ss->dev = dev;
++
++	ss->state = devm_qcom_smem_state_get(dev, "sleepstate", &ss->awake_bit);
++	if (IS_ERR(ss->state))
++		return dev_err_probe(dev, PTR_ERR(ss->state),
++				     "failed to get sleepstate smem state\n");
++
++	mask = BIT(ss->awake_bit);
++	ret = qcom_smem_state_update_bits(ss->state, mask, mask);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to signal awake\n");
++
++	irq = platform_get_irq_byname_optional(pdev, "smp2p-sleepstate-in");
++	if (irq > 0) {
++		device_init_wakeup(dev, true);
++		ret = devm_request_threaded_irq(dev, irq, NULL,
++						smp2p_sleepstate_irq,
++						IRQF_ONESHOT | IRQF_TRIGGER_RISING,
++						"smp2p-sleepstate", ss);
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to request sleepstate irq\n");
++	}
++
++	ss->pm_nb.notifier_call = smp2p_sleepstate_pm_notifier;
++	ss->pm_nb.priority = INT_MAX;
++	ret = register_pm_notifier(&ss->pm_nb);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register pm notifier\n");
++
++	ret = devm_add_action_or_reset(dev, smp2p_sleepstate_unregister_nb,
++				       &ss->pm_nb);
++	if (ret)
++		return ret;
++
++	dev_info(dev, "signalling AP sleep state on smem bit %u\n",
++		 ss->awake_bit);
++
++	return 0;
++}
++
++static const struct of_device_id smp2p_sleepstate_of_match[] = {
++	{ .compatible = "qcom,smp2p-sleepstate" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, smp2p_sleepstate_of_match);
++
++static struct platform_driver smp2p_sleepstate_driver = {
++	.probe = smp2p_sleepstate_probe,
++	.driver = {
++		.name = "smp2p_sleepstate",
++		.of_match_table = smp2p_sleepstate_of_match,
++	},
++};
++module_platform_driver(smp2p_sleepstate_driver);
++
++MODULE_DESCRIPTION("Qualcomm SMP2P sleep state signalling");
++MODULE_LICENSE("GPL");

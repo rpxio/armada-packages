@@ -1,0 +1,43 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] arm64: dts: qcom: odin3: signal AP sleep state to the ADSP over SMP2P
+
+Add the "sleepstate" out entry and "sleepstate_see" in entry to the ADSP
+SMP2P link, as the vendor device tree has, and a qcom,smp2p-sleepstate
+node that binds them to the sleep state driver.
+
+--- a/arch/arm64/boot/dts/qcom/cq8725s-ayn-odin3.dts
++++ b/arch/arm64/boot/dts/qcom/cq8725s-ayn-odin3.dts
+@@ -348,5 +348,33 @@
+ 			gpios = <&tlmm 7 GPIO_ACTIVE_LOW>;
+ 			debounce-interval = <15>;
+ 		};
++	};
++};
++
++/*
++ * Tell the ADSP when the AP sleeps so it releases its RPMh votes; without
++ * this the SoC never reaches CX shutdown in s2idle. Bit 12 of the
++ * "sleepstate" entry is "AP awake", matching the vendor kernel.
++ */
++&{/smp2p-adsp} {
++	sleepstate_smp2p_out: sleepstate-out {
++		qcom,entry-name = "sleepstate";
++		#qcom,smem-state-cells = <1>;
++	};
++
++	sleepstate_smp2p_in: sleepstate-in {
++		qcom,entry-name = "sleepstate_see";
++		interrupt-controller;
++		#interrupt-cells = <2>;
+ 	};
+ };
++
++/ {
++	smp2p-sleepstate {
++		compatible = "qcom,smp2p-sleepstate";
++		qcom,smem-states = <&sleepstate_smp2p_out 12>;
++		qcom,smem-state-names = "sleepstate";
++		interrupts-extended = <&sleepstate_smp2p_in 0 IRQ_TYPE_EDGE_RISING>;
++		interrupt-names = "smp2p-sleepstate-in";
++	};
++};
