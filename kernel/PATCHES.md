@@ -236,10 +236,6 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: mainline sm8750.dtsi carries `qcom,ice = <&ice>` on the UFS node after 7.2
   notes: Without the link ufs-qcom never suspends the ICE and its core clock (GPLL4-sourced) stays prepared through suspend, holding the XO. Found with capture/sleep-probe.sh on the Odin 3.
-- `dts/cq8725s-ayn-common-rsc-control-tcs.dtsi.patch`
-  source: armada
-  upstream: unknown
-  notes: EXPERIMENT. Declares CONTROL_TCS 1 on apps_rsc so rpmh_rsc_write_next_wakeup() programs CTL_TCS_DATA at each flush (the driver skips it with CONTROL_TCS 0, and sm8750.dtsi declares 0). Takes no hardware TCS slot. The registers already read valid/infinite from firmware, so this mostly changes the idle-time hint; drop if it makes no difference.
 - `patches/1010-soc-qcom-add-smp2p-sleepstate-driver.patch`
   source: https://github.com/qwerty12/SM-G9750_GrainGripper/blob/master/drivers/soc/qcom/smp2p_sleepstate.c
   upstream: unknown
