@@ -240,6 +240,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: https://github.com/qwerty12/SM-G9750_GrainGripper/blob/master/drivers/soc/qcom/smp2p_sleepstate.c
   upstream: unknown
   notes: Ported from the downstream smp2p_sleepstate driver to the mainline smem-state and platform IRQ APIs (devm, dev_err_probe, pm_wakeup_dev_event). Clears the "AP awake" bit (bit 12 of the SMP2P "sleepstate" entry) on PM_SUSPEND_PREPARE and sets it on PM_POST_SUSPEND so the ADSP releases its RPMh votes; without it the SM8750 never reaches cxsd/aosd in s2idle. Paired with `dts/cq8725s-ayn-odin3-sleepstate.dts.patch` and `CONFIG_QCOM_SMP2P_SLEEPSTATE=y`.
+- `patches/1011-drm-msm-dsi-phy-manage-iface-clock-without-pm_clk.patch`
+  source: armada
+  upstream: unknown
+  notes: pm_clk keeps the DSI PHY "iface" clock prepared for the driver lifetime; on RPMh SoCs the XO vote is a prepare-level vote, so this one leaf keeps bi_tcxo requested in the sleep set. Per-consumer clk tracing on the Odin 3 showed the DSI host, DPU and MDSS releasing disp_cc_mdss_ahb_clk at suspend and the PHY never. Candidate for upstream submission.
 - `patches/1300-input-rsinput-axis-deadzone.patch`
   source: armada
   upstream: local

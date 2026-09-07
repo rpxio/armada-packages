@@ -69,6 +69,7 @@
 1008-serial-qcom-geni-force-suspend-resume-in-system-sleep.patch
 1009-scsi-ufs-qcom-guard-lane-clock-enable.patch
 1010-soc-qcom-add-smp2p-sleepstate-driver.patch
+1011-drm-msm-dsi-phy-manage-iface-clock-without-pm_clk.patch
 1004-input-haptics-stop-zero-amplitude-immediately.patch
 1300-input-rsinput-axis-deadzone.patch
 0515-input-rsinput-reassemble-uart-frames-instead-of-dropping-them.patch
