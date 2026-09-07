@@ -1,0 +1,64 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] soc: qcom: aoss: add a free-form debugfs message entry
+
+The AOP accepts more than the four fixed messages the qcom_aoss debugfs
+exposes. In particular "{class: lpm_mon, type: cxpc, dur: 1000, flush: 5,
+ts_adj: 1}" turns on the AOP's low-power-mode monitor, which logs to
+message RAM which DRV (APPS, AUDIO, GPU, DISPLAY, PCIe CESTA, TZ, HYP,
+L3, ...) was still voting each time CX power collapse was attempted.
+The vendor kernel reads that log through its sys_pm_vx driver; this
+adds only the sending half, /sys/kernel/debug/qcom_aoss/send_message,
+so the log can be enabled from userspace and read back over /dev/mem.
+
+Developer aid for the Odin 3 sleep investigation; not for upstream.
+
+--- a/drivers/soc/qcom/qcom_aoss.c
++++ b/drivers/soc/qcom/qcom_aoss.c
+@@ -555,7 +555,37 @@
+ 	.open = simple_open,
+ 	.write = qmp_debugfs_write,
+ };
++
++/*
++ * Free-form message entry for developers: the written text is sent to the
++ * AOP verbatim, e.g. "{class: lpm_mon, type: cxpc, dur: 1000, flush: 5}".
++ */
++static ssize_t qmp_debugfs_raw_write(struct file *file, const char __user *user_buf,
++				     size_t count, loff_t *pos)
++{
++	struct qmp *qmp = file->private_data;
++	char buf[QMP_MSG_LEN];
++	ssize_t len;
++	int ret;
+ 
++	len = simple_write_to_buffer(buf, sizeof(buf) - 1, pos, user_buf, count);
++	if (len < 0)
++		return len;
++	buf[len] = '\0';
++	strim(buf);
++
++	ret = qmp_send(qmp, "%s", buf);
++	if (ret < 0)
++		return ret;
++
++	return count;
++}
++
++static const struct file_operations qmp_debugfs_raw_fops = {
++	.open = simple_open,
++	.write = qmp_debugfs_raw_write,
++};
++
+ static void qmp_debugfs_create(struct qmp *qmp)
+ {
+ 	const struct qmp_debugfs_entry *entry;
+@@ -563,6 +593,9 @@
+ 
+ 	qmp->debugfs_root = debugfs_create_dir("qcom_aoss", NULL);
+ 
++	debugfs_create_file("send_message", 0200, qmp->debugfs_root, qmp,
++			    &qmp_debugfs_raw_fops);
++
+ 	for (i = 0; i < ARRAY_SIZE(qmp->debugfs_files); i++) {
+ 		entry = &qmp_debugfs_entries[i];
+ 

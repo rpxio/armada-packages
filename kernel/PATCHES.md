@@ -252,6 +252,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: unknown
   notes: Same intent as the Thorch/SM8550 endpoint-only eligibility carried on the fork's sm8550-sleep branch, rewritten against the 7.2 upstream helper. Without it the hotplug-capable SM8750 root port is never bridge_d3 (no CONFIG_HOTPLUG_PCI_PCIE, no pcie_port_pm=force), stays in D0, and vetoes the host power-off; gcc_pcie_0_aux/phy_rchng then hold GPLL0 and the XO through s2idle. Works with pcie_ports=compat left in place.
+- `patches/1013-soc-qcom-aoss-free-form-debugfs-message.patch`
+  source: armada
+  upstream: no (developer aid)
+  notes: Adds /sys/kernel/debug/qcom_aoss/send_message, a free-form QMP message entry like the vendor kernel's aoss_send_message. Used to enable the AOP low-power-mode monitor ("{class: lpm_mon, type: cxpc, ...}") whose per-DRV violator log in AOP message RAM shows which master blocked CX power collapse during s2idle. Drop once the Odin 3 sleep entry is understood.
 - `patches/1300-input-rsinput-axis-deadzone.patch`
   source: armada
   upstream: local
