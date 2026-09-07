@@ -232,6 +232,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: unknown
   notes: Armada found this with capture/sleep-probe.sh on the Odin 3; mainline master still has the bug as of 7.3-rc2. Restores the is_lane_clks_enabled guard on ufs_qcom_enable_lane_clks() that 9caef8568831 dropped; c1553fc105df later made the enable run twice per runtime resume, leaking one reference per cycle on all UFS clocks and keeping GPLL0/XO on across suspend. Candidate for upstream submission with the Fixes tag in the patch.
+- `dts/cq8725s-ayn-common-ufs-ice.dtsi.patch`
+  source: armada
+  upstream: mainline sm8750.dtsi carries `qcom,ice = <&ice>` on the UFS node after 7.2
+  notes: Without the link ufs-qcom never suspends the ICE and its core clock (GPLL4-sourced) stays prepared through suspend, holding the XO. Found with capture/sleep-probe.sh on the Odin 3.
 - `patches/1010-soc-qcom-add-smp2p-sleepstate-driver.patch`
   source: https://github.com/qwerty12/SM-G9750_GrainGripper/blob/master/drivers/soc/qcom/smp2p_sleepstate.c
   upstream: unknown

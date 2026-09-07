@@ -1,0 +1,27 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] arm64: dts: qcom: cq8725s-ayn: link UFS to the inline crypto engine
+
+The SM8750 dtsi in 7.2 declares the ICE at crypto@1d88000 but does not
+reference it from the UFS node, so ufs_qcom_ice_init() gets -EOPNOTSUPP
+and ufs-qcom never suspends the engine. The ICE driver enables its core
+clock at probe, and with no consumer to suspend it the clock stays
+prepared across system sleep and holds GPLL4 and the XO. Add the
+qcom,ice link as current mainline does.
+
+--- a/arch/arm64/boot/dts/qcom/cq8725s-ayn-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/cq8725s-ayn-common.dtsi
+@@ -1413,6 +1413,14 @@
+ 
+ &ufs_mem_hc {
+ 	reset-gpios = <&tlmm 215 GPIO_ACTIVE_LOW>;
++
++	/*
++	 * Link the inline crypto engine so ufs-qcom owns its clocks. Without
++	 * this the ICE driver leaves gcc_ufs_phy_ice_core_clk enabled from
++	 * probe and nobody turns it off, which keeps GPLL4 and the XO voted
++	 * on through suspend. Mainline adds the same property after 7.2.
++	 */
++	qcom,ice = <&ice>;
+ 
+ 	vcc-supply = <&vreg_l17b_2p5>;
+ 	vcc-max-microamp = <1300000>;
