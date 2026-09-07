@@ -1,0 +1,37 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] PCI: host-common: let endpoints alone decide D3cold eligibility
+
+pci_host_common_d3cold_possible() walks every device under the host
+bridge and refuses D3cold unless each one sits in D3hot. On the AYN
+Odin 3 (SM8750) the root port advertises hotplug capability in its slot
+register, so it is flagged is_pciehp, and without CONFIG_HOTPLUG_PCI_PCIE
+and pcie_port_pm=force pci_bridge_d3_possible() returns false. The port
+is then not power-manageable, pci_pm_suspend_noirq() leaves it in D0,
+the walk fails on the port itself, and dw_pcie_suspend_noirq() returns
+early with the controller, PHY, link and clocks all kept on. The WiFi
+endpoint had already reached D3hot; the veto was the root port.
+
+Skip bridges in the walk. The DesignWare host tears the link down and
+reinitialises the port on resume regardless of the port's PM state, so
+the endpoint's state is what matters. This mirrors the endpoint-only
+eligibility Armada validated on SM8550.
+
+--- a/drivers/pci/controller/pci-host-common.c
++++ b/drivers/pci/controller/pci-host-common.c
+@@ -289,6 +289,16 @@
+ 	u32 *flags = userdata;
+ 
+ 	if (!pdev->dev.driver && !pci_is_enabled(pdev))
++		return 0;
++
++	/*
++	 * Only endpoints decide D3cold eligibility. A root port that
++	 * advertises hotplug capability is never bridge_d3 without native
++	 * PCIe hotplug and pcie_port_pm=force, so it stays in D0 through
++	 * system suspend and would veto the power-off of a host whose link
++	 * is torn down and reinitialised on resume anyway.
++	 */
++	if (pci_is_bridge(pdev))
+ 		return 0;
+ 
+ 	if (pdev->current_state != PCI_D3hot)

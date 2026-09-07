@@ -244,6 +244,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: unknown
   notes: pm_clk keeps the DSI PHY "iface" clock prepared for the driver lifetime; on RPMh SoCs the XO vote is a prepare-level vote, so this one leaf keeps bi_tcxo requested in the sleep set. Per-consumer clk tracing on the Odin 3 showed the DSI host, DPU and MDSS releasing disp_cc_mdss_ahb_clk at suspend and the PHY never. Candidate for upstream submission.
+- `patches/1012-pci-host-common-endpoint-only-d3cold-eligibility.patch`
+  source: armada
+  upstream: unknown
+  notes: Same intent as the Thorch/SM8550 endpoint-only eligibility carried on the fork's sm8550-sleep branch, rewritten against the 7.2 upstream helper. Without it the hotplug-capable SM8750 root port is never bridge_d3 (no CONFIG_HOTPLUG_PCI_PCIE, no pcie_port_pm=force), stays in D0, and vetoes the host power-off; gcc_pcie_0_aux/phy_rchng then hold GPLL0 and the XO through s2idle. Works with pcie_ports=compat left in place.
 - `patches/1300-input-rsinput-axis-deadzone.patch`
   source: armada
   upstream: local
