@@ -1,0 +1,41 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] drm/msm/a6xx: vote zero bandwidth before GMU slumber
+
+On the way into system suspend devfreq calls a6xx_gmu_set_freq() with
+suspended=true, which records the frequency and returns before sending
+the HFI GX_BW_PERF_VOTE. a6xx_gmu_shutdown() then asks the GMU to
+slumber with whatever bandwidth level was last active still voted on the
+GMU's RSC DRV. On the AYN Odin 3 (SM8750, Adreno 830, GMU fw 5.1.25)
+the AOP's DDR low-power-mode monitor shows the GPU DRV holding a DDR
+vote for the whole of s2idle while every other master is at zero, so
+DDR stays at 1555 MHz, CX never power-collapses and the device drains
+about 1.9 %/h asleep. kgsl passes explicit levels to the GMU on the way
+to slumber; mainline passes nothing.
+
+Send an explicit vote for perf level 0 and bandwidth level 0 (the
+all-zero BCM commands) before prepare-slumber. a6xx_gmu_resume() already
+resets gmu->freq and re-votes the current OPP on the way back up.
+
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
+@@ -1433,6 +1433,20 @@
+ 	/* If the GMU isn't responding assume it is hung */
+ 	if (ret)
+ 		goto force_off;
++
++	/*
++	 * Drop the GMU's DDR bandwidth vote before slumber. On the way down
++	 * devfreq calls a6xx_gmu_set_freq() with suspended=true, which only
++	 * records the frequency and never sends the HFI vote, so the GMU's
++	 * RSC DRV keeps whatever bandwidth level was last active. The AOP
++	 * then sees the GPU still requiring DDR through system suspend and
++	 * never collapses DDR or CX (observed on SM8750/A830 with the AOP's
++	 * DDR low-power-mode monitor). Vote the lowest perf level and the
++	 * zero bandwidth level explicitly; a6xx_gmu_resume() re-votes the
++	 * real OPP on the way back up.
++	 */
++	if (!gmu->legacy)
++		a6xx_hfi_set_freq(gmu, 0, 0);
+ 
+ 	adreno_gpu->funcs->bus_halt(adreno_gpu, a6xx_gpu->hung);
+ 
