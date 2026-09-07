@@ -256,6 +256,10 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
   source: armada
   upstream: no (developer aid)
   notes: Adds /sys/kernel/debug/qcom_aoss/send_message, a free-form QMP message entry like the vendor kernel's aoss_send_message. Used to enable the AOP low-power-mode monitor ("{class: lpm_mon, type: cxpc, ...}") whose per-DRV violator log in AOP message RAM shows which master blocked CX power collapse during s2idle. Drop once the Odin 3 sleep entry is understood.
+- `patches/1014-ASoC-lpass-macro-drop-hw-votes-on-runtime-suspend.patch`
+  source: armada
+  upstream: candidate (not yet submitted)
+  notes: The LPASS rx/tx/va/wsa macro drivers hold the q6prm "macro" and "dcodec" hardware votes from probe to remove, which keeps the ADSP's LPASS core (and its RPMh votes) up through s2idle. The AOP monitor on the Odin 3 shows AUDIO as the sole DRV blocking CX power collapse. Release the votes in runtime suspend, retake them in runtime resume. Only effective when the macros actually runtime-suspend, i.e. when the wcd939x SoundWire codec is allowed to suspend (see 0603).
 - `patches/1300-input-rsinput-axis-deadzone.patch`
   source: armada
   upstream: local

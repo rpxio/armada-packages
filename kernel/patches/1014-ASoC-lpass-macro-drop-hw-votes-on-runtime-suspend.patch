@@ -1,0 +1,221 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] ASoC: codecs: lpass-macro: drop the LPASS core hw votes on runtime suspend
+
+The rx, tx, va and wsa macro drivers take the "macro" and "dcodec"
+clocks at probe and hold them until remove. On SM8750 those are not
+clocks but q6prm hardware votes (LPASS_HW_MACRO_VOTE and
+LPASS_HW_DCODEC_VOTE) that ask the ADSP to keep the LPASS core powered.
+While any macro holds them the ADSP keeps its own RPMh votes, and the
+AOP's low-power-mode monitor shows the AUDIO DRV as the only master
+still voting through the whole of s2idle: cxsd/aosd/ddr never count,
+DDR sits at 1555 MHz and the AYN Odin 3 drains ~1.9 %/h asleep. Android
+on the same unit takes these votes only while a macro is in use.
+
+Release both votes in runtime suspend, after the mclk/npl/fsgen clocks,
+and reacquire them first thing in runtime resume before the register
+cache is synced. Runtime suspend already marks the regmap cache-only, so
+the LPASS core losing state while unvoted is covered by the existing
+regcache_sync on resume.
+
+diff -ru pa/sound/soc/codecs/lpass-rx-macro.c pb/sound/soc/codecs/lpass-rx-macro.c
+--- a/sound/soc/codecs/lpass-rx-macro.c
++++ b/sound/soc/codecs/lpass-rx-macro.c
+@@ -3976,6 +3976,8 @@
+ 	clk_disable_unprepare(rx->fsgen);
+ 	clk_disable_unprepare(rx->npl);
+ 	clk_disable_unprepare(rx->mclk);
++	clk_disable_unprepare(rx->dcodec);
++	clk_disable_unprepare(rx->macro);
+ 
+ 	return 0;
+ }
+@@ -3985,10 +3987,22 @@
+ 	struct rx_macro *rx = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	ret = clk_prepare_enable(rx->macro);
++	if (ret) {
++		dev_err(dev, "unable to prepare macro\n");
++		return ret;
++	}
++
++	ret = clk_prepare_enable(rx->dcodec);
++	if (ret) {
++		dev_err(dev, "unable to prepare dcodec\n");
++		goto err_dcodec;
++	}
++
+ 	ret = clk_prepare_enable(rx->mclk);
+ 	if (ret) {
+ 		dev_err(dev, "unable to prepare mclk\n");
+-		return ret;
++		goto err_mclk;
+ 	}
+ 
+ 	ret = clk_prepare_enable(rx->npl);
+@@ -4010,6 +4024,10 @@
+ 	clk_disable_unprepare(rx->npl);
+ err_npl:
+ 	clk_disable_unprepare(rx->mclk);
++err_mclk:
++	clk_disable_unprepare(rx->dcodec);
++err_dcodec:
++	clk_disable_unprepare(rx->macro);
+ 
+ 	return ret;
+ }
+diff -ru pa/sound/soc/codecs/lpass-tx-macro.c pb/sound/soc/codecs/lpass-tx-macro.c
+--- a/sound/soc/codecs/lpass-tx-macro.c
++++ b/sound/soc/codecs/lpass-tx-macro.c
+@@ -2409,6 +2409,8 @@
+ 	clk_disable_unprepare(tx->fsgen);
+ 	clk_disable_unprepare(tx->npl);
+ 	clk_disable_unprepare(tx->mclk);
++	clk_disable_unprepare(tx->dcodec);
++	clk_disable_unprepare(tx->macro);
+ 
+ 	return 0;
+ }
+@@ -2418,10 +2420,22 @@
+ 	struct tx_macro *tx = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	ret = clk_prepare_enable(tx->macro);
++	if (ret) {
++		dev_err(dev, "unable to prepare macro\n");
++		return ret;
++	}
++
++	ret = clk_prepare_enable(tx->dcodec);
++	if (ret) {
++		dev_err(dev, "unable to prepare dcodec\n");
++		goto err_dcodec;
++	}
++
+ 	ret = clk_prepare_enable(tx->mclk);
+ 	if (ret) {
+ 		dev_err(dev, "unable to prepare mclk\n");
+-		return ret;
++		goto err_mclk;
+ 	}
+ 
+ 	ret = clk_prepare_enable(tx->npl);
+@@ -2444,6 +2458,10 @@
+ 	clk_disable_unprepare(tx->npl);
+ err_npl:
+ 	clk_disable_unprepare(tx->mclk);
++err_mclk:
++	clk_disable_unprepare(tx->dcodec);
++err_dcodec:
++	clk_disable_unprepare(tx->macro);
+ 
+ 	return ret;
+ }
+diff -ru pa/sound/soc/codecs/lpass-va-macro.c pb/sound/soc/codecs/lpass-va-macro.c
+--- a/sound/soc/codecs/lpass-va-macro.c
++++ b/sound/soc/codecs/lpass-va-macro.c
+@@ -1724,6 +1724,8 @@
+ 		clk_disable_unprepare(va->npl);
+ 
+ 	clk_disable_unprepare(va->mclk);
++	clk_disable_unprepare(va->dcodec);
++	clk_disable_unprepare(va->macro);
+ 
+ 	return 0;
+ }
+@@ -1733,18 +1735,29 @@
+ 	struct va_macro *va = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	ret = clk_prepare_enable(va->macro);
++	if (ret) {
++		dev_err(va->dev, "unable to prepare macro\n");
++		return ret;
++	}
++
++	ret = clk_prepare_enable(va->dcodec);
++	if (ret) {
++		dev_err(va->dev, "unable to prepare dcodec\n");
++		goto err_dcodec;
++	}
++
+ 	ret = clk_prepare_enable(va->mclk);
+ 	if (ret) {
+ 		dev_err(va->dev, "unable to prepare mclk\n");
+-		return ret;
++		goto err_mclk;
+ 	}
+ 
+ 	if (va->has_npl_clk) {
+ 		ret = clk_prepare_enable(va->npl);
+ 		if (ret) {
+-			clk_disable_unprepare(va->mclk);
+ 			dev_err(va->dev, "unable to prepare npl\n");
+-			return ret;
++			goto err_npl;
+ 		}
+ 	}
+ 
+@@ -1752,6 +1765,15 @@
+ 	regcache_sync(va->regmap);
+ 
+ 	return 0;
++
++err_npl:
++	clk_disable_unprepare(va->mclk);
++err_mclk:
++	clk_disable_unprepare(va->dcodec);
++err_dcodec:
++	clk_disable_unprepare(va->macro);
++
++	return ret;
+ }
+ 
+ 
+diff -ru pa/sound/soc/codecs/lpass-wsa-macro.c pb/sound/soc/codecs/lpass-wsa-macro.c
+--- a/sound/soc/codecs/lpass-wsa-macro.c
++++ b/sound/soc/codecs/lpass-wsa-macro.c
+@@ -2859,6 +2859,8 @@
+ 	clk_disable_unprepare(wsa->fsgen);
+ 	clk_disable_unprepare(wsa->npl);
+ 	clk_disable_unprepare(wsa->mclk);
++	clk_disable_unprepare(wsa->dcodec);
++	clk_disable_unprepare(wsa->macro);
+ 
+ 	return 0;
+ }
+@@ -2868,10 +2870,22 @@
+ 	struct wsa_macro *wsa = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	ret = clk_prepare_enable(wsa->macro);
++	if (ret) {
++		dev_err(dev, "unable to prepare macro\n");
++		return ret;
++	}
++
++	ret = clk_prepare_enable(wsa->dcodec);
++	if (ret) {
++		dev_err(dev, "unable to prepare dcodec\n");
++		goto err_dcodec;
++	}
++
+ 	ret = clk_prepare_enable(wsa->mclk);
+ 	if (ret) {
+ 		dev_err(dev, "unable to prepare mclk\n");
+-		return ret;
++		goto err_mclk;
+ 	}
+ 
+ 	ret = clk_prepare_enable(wsa->npl);
+@@ -2894,6 +2908,10 @@
+ 	clk_disable_unprepare(wsa->npl);
+ err_npl:
+ 	clk_disable_unprepare(wsa->mclk);
++err_mclk:
++	clk_disable_unprepare(wsa->dcodec);
++err_dcodec:
++	clk_disable_unprepare(wsa->macro);
+ 
+ 	return ret;
+ }

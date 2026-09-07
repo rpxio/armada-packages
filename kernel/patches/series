@@ -72,6 +72,7 @@
 1011-drm-msm-dsi-phy-manage-iface-clock-without-pm_clk.patch
 1012-pci-host-common-endpoint-only-d3cold-eligibility.patch
 1013-soc-qcom-aoss-free-form-debugfs-message.patch
+1014-ASoC-lpass-macro-drop-hw-votes-on-runtime-suspend.patch
 1004-input-haptics-stop-zero-amplitude-immediately.patch
 1300-input-rsinput-axis-deadzone.patch
 0515-input-rsinput-reassemble-uart-frames-instead-of-dropping-them.patch
