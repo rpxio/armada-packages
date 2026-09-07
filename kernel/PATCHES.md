@@ -224,10 +224,14 @@ no equivalent submission was found, or a permanent URL to the upstream submissio
 - `patches/1006-tty-serial-qcom-geni-mask-non-console-irq-on-suspend.patch`
   source: https://github.com/thorch-os/thorch/blob/2614a262d7de3f31bd47a0c92981461146663847/packages/linux-thorch/patches/0010-tty-serial-qcom-geni-mask-non-console-irq-on-suspend.patch
   upstream: unknown
-- `patches/1007-serial-qcom-geni-force-suspend-resume-in-system-sleep.patch`
+- `patches/1008-serial-qcom-geni-force-suspend-resume-in-system-sleep.patch`
   source: https://github.com/torvalds/linux/commit/d0cd9c8d0fd59bc7d140f3d60cf02e1d80376dab
   upstream: https://github.com/torvalds/linux/commit/d0cd9c8d0fd59bc7d140f3d60cf02e1d80376dab
   notes: Backport to 7.2 (mainline in 7.3-rc1) with context adjusted for 1006, which edits the same two functions. Open GENI UART ports (BT HCI and gamepad MCU serdev on the Odin 3) otherwise never runtime-suspend at system suspend, keeping the QUP clocked and a CNOC vote in the RPMh sleep set; measured 240 mA vs 5 mA in a 10 minute s2idle nap.
+- `patches/1009-scsi-ufs-qcom-guard-lane-clock-enable.patch`
+  source: armada
+  upstream: unknown
+  notes: Armada found this with capture/sleep-probe.sh on the Odin 3; mainline master still has the bug as of 7.3-rc2. Restores the is_lane_clks_enabled guard on ufs_qcom_enable_lane_clks() that 9caef8568831 dropped; c1553fc105df later made the enable run twice per runtime resume, leaking one reference per cycle on all UFS clocks and keeping GPLL0/XO on across suspend. Candidate for upstream submission with the Fixes tag in the patch.
 - `patches/1010-soc-qcom-add-smp2p-sleepstate-driver.patch`
   source: https://github.com/qwerty12/SM-G9750_GrainGripper/blob/master/drivers/soc/qcom/smp2p_sleepstate.c
   upstream: unknown

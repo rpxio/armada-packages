@@ -1,0 +1,36 @@
+From: Armada <noreply@armada.local>
+Subject: [PATCH] scsi: ufs: ufs-qcom: do not enable the lane clocks twice
+
+ufs_qcom_disable_lane_clks() is guarded by host->is_lane_clks_enabled
+but ufs_qcom_enable_lane_clks() is not. Since commit c1553fc105df
+("scsi: ufs: ufs-qcom: Disable lane clocks during phy hibern8") the
+enable runs from ufs_qcom_setup_clocks() PRE_CHANGE whenever the link is
+in hibern8, and ufs_qcom_resume() enables the same clocks again a moment
+later. The disable only runs once, so every runtime resume leaks one
+prepare/enable reference on every clock in the bulk list, which on
+SM8550/SM8750 is the whole set: AHB, AXI, aggre AXI, UniPro core, ICE
+and the lane symbol clocks.
+
+On the AYN Odin 3 the counts reach several hundred within an hour of
+uptime. At system suspend the single disable cannot bring them to zero,
+so the UFS clocks stay prepared through suspend-to-idle, GPLL0 and GPLL4
+stay requested, and with them the XO. The SoC never enters AOSS deep
+sleep and the device draws well over 100 mA all night.
+
+Restore the guard the function had before the clk_bulk conversion so a
+second enable is a no-op, matching the disable side.
+
+Fixes: c1553fc105df ("scsi: ufs: ufs-qcom: Disable lane clocks during phy hibern8")
+
+--- a/drivers/ufs/host/ufs-qcom.c
++++ b/drivers/ufs/host/ufs-qcom.c
+@@ -356,6 +356,9 @@
+ {
+ 	int err;
+ 
++	if (host->is_lane_clks_enabled)
++		return 0;
++
+ 	err = clk_bulk_prepare_enable(host->num_clks, host->clks);
+ 	if (err)
+ 		return err;
